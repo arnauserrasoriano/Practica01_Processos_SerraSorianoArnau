@@ -152,8 +152,11 @@ public class ProcessRunner {
             java.util.concurrent.ExecutionException {
 
         // Com a màxim dos workers executant-se alhora.
-        ExecutorService executor =
-                Executors.newFixedThreadPool(2);
+        ExecutorService executor = Executors.newFixedThreadPool(3, r -> {
+            Thread t = new Thread(r);
+            t.setName("io-" + t.getId());
+            return t;
+        });
 
         try {
             List<Future<ProcessResult>> futures =
