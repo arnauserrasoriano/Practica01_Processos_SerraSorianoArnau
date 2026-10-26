@@ -65,15 +65,22 @@ public class Main {
 
         // 6. Prova de pipe manual
         System.out.println("\n--- 6. PIPE ---");
+
         PipelineResult pipe = runner.connectProcesses(
-                List.of("printf", "poma\npera\nplatan\n"),
-                List.of("grep", "pera")
+                List.of("printf", "Anna\nBiel\nCarla\nDavid\nEmma\n"),
+                List.of(
+                        "sh", "-c",
+                        "awk '{ n++; chars += length($0) } " +
+                                "END { printf \"Linies: %d\\nCaracters: %d\\n\", n, chars }'"
+                )
         );
 
         System.out.println("Sortida del consumidor: "
                 + pipe.consumerOutput());
-        System.out.println("Codi productor: " + pipe.producerExitCode());
-        System.out.println("Codi consumidor: " + pipe.consumerExitCode());
+        System.out.println("Codi productor: "
+                + pipe.producerExitCode());
+        System.out.println("Codi consumidor: "
+                + pipe.consumerExitCode());
 
         // 7. Diagnosi d'errors: un worker acaba amb codi 7
         System.out.println("\n--- 7. DIAGNOSI D'ERRORS ---");
