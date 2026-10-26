@@ -15,6 +15,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Logger;
 
 public class ProcessRunner {
 
@@ -51,6 +52,22 @@ public class ProcessRunner {
         }
     }
 
+
+
+    public void sendInput(Process process, String input) throws IOException {
+        try (var writer = new java.io.BufferedWriter(
+                new java.io.OutputStreamWriter(
+                        process.getOutputStream(),
+                        java.nio.charset.StandardCharsets.UTF_8))) {
+
+            if (input != null && !input.isEmpty()) {
+                writer.write(input);
+                writer.newLine();
+            }
+        }
+    }
+
+
     private void readStream(java.io.InputStream stream, String source, ConcurrentLinkedQueue<OutputLine> output) {
 
         try (BufferedReader reader = new BufferedReader(
@@ -67,19 +84,186 @@ public class ProcessRunner {
         }
     }
 
-    public void sendInput(Process process, String input)
-            throws IOException {
+    private static final Logger LOGGER =
+            Logger.getLogger(ProcessRunner.class.getName());
 
-        try (var writer = new java.io.BufferedWriter(
-                new java.io.OutputStreamWriter(
-                        process.getOutputStream(),
-                        java.nio.charset.StandardCharsets.UTF_8))) {
+    private void stopProcess(
+            Process process,
+            TerminationCause cause) {
 
-            writer.write(input);
-            writer.newLine();
+        // Obtenir els processos fills abans d'aturar el principal.
+        List<ProcessHandle> descendants =
+                process.toHandle().descendants().toList();
+
+        LOGGER.info("Tancant el procés. Causa: " + cause);
+
+        // Intentar aturar primer els processos fills.
+        for (ProcessHandle child : descendants) {
+            child.destroy();
+        }
+
+        // Intentar aturar el procés principal.
+        process.destroy();
+
+        try {
+            // Donar 500 ms perquè el procés principal s'aturi.
+            process.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+            // Si algun fill continua actiu, forçar-ne el tancament.
+            for (ProcessHandle child : descendants) {
+                if (child.isAlive()) {
+                    child.destroyForcibly();
+                }
+            }
+
+            // Si el principal continua actiu, forçar-ne el tancament.
+            if (process.isAlive()) {
+                process.destroyForcibly();
+                process.waitFor();
+            }
+
+        } catch (InterruptedException e) {
+            // Si s'interromp aquest fil, forçar l'aturada.
+            for (ProcessHandle child : descendants) {
+                if (child.isAlive()) {
+                    child.destroyForcibly();
+                }
+            }
+
+            if (process.isAlive()) {
+                process.destroyForcibly();
+            }
+
+            Thread.currentThread().interrupt();
         }
     }
 
+    public void cancelProcess(Process process) {
+        if (process != null && process.isAlive()) {
+            stopProcess(process, TerminationCause.CANCELLED);
+        }
+    }
+
+
+    public List<ProcessResult> runWorkers(
+            List<List<String>> workerCommands,
+            java.time.Duration timeout)
+            throws InterruptedException,
+            java.util.concurrent.ExecutionException {
+
+        // Com a màxim dos workers executant-se alhora.
+        ExecutorService executor =
+                Executors.newFixedThreadPool(2);
+
+        try {
+            List<Future<ProcessResult>> futures =
+                    new java.util.ArrayList<>();
+
+            // Enviar tots els workers a la cua d'execució.
+            for (List<String> command : workerCommands) {
+                Future<ProcessResult> future = executor.submit(
+                        () -> execute(command, "", timeout)
+                );
+
+                futures.add(future);
+            }
+
+            // Recollir i agregar tots els resultats.
+            List<ProcessResult> results =
+                    new java.util.ArrayList<>();
+
+            for (Future<ProcessResult> future : futures) {
+                results.add(future.get());
+            }
+
+            return List.copyOf(results);
+
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    public PipelineResult connectProcesses(
+            List<String> producerCommand,
+            List<String> consumerCommand)
+            throws IOException, InterruptedException,
+            java.util.concurrent.ExecutionException {
+
+        Process producer =
+                new ProcessBuilder(producerCommand).start();
+
+        Process consumer =
+                new ProcessBuilder(consumerCommand).start();
+
+        ExecutorService executor =
+                Executors.newFixedThreadPool(4);
+
+        try {
+            // 1. Connectar stdout del productor amb stdin del consumidor.
+            Future<?> transfer = executor.submit(() -> {
+                try (
+                        var input = producer.getInputStream();
+                        var output = consumer.getOutputStream()
+                ) {
+                    input.transferTo(output);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+
+            // 2. Llegir stdout del co+nsumidor.
+            Future<String> consumerOutput = executor.submit(() ->
+                    new String(
+                            consumer.getInputStream().readAllBytes(),
+                            java.nio.charset.StandardCharsets.UTF_8
+                    )
+            );
+
+            // 3. Llegir stderr dels dos processos.
+            Future<String> producerError = executor.submit(() ->
+                    new String(
+                            producer.getErrorStream().readAllBytes(),
+                            java.nio.charset.StandardCharsets.UTF_8
+                    )
+            );
+
+            Future<String> consumerError = executor.submit(() ->
+                    new String(
+                            consumer.getErrorStream().readAllBytes(),
+                            java.nio.charset.StandardCharsets.UTF_8
+                    )
+            );
+
+            // 4. Esperar que acabin els processos.
+            int producerExitCode = producer.waitFor();
+            transfer.get();
+
+            int consumerExitCode = consumer.waitFor();
+
+            String output = consumerOutput.get();
+            String error1 = producerError.get();
+            String error2 = consumerError.get();
+
+            // 5. Registrar els errors per a la diagnosi.
+            if (!error1.isEmpty()) {
+                System.err.println("Error del productor: " + error1);
+            }
+
+            if (!error2.isEmpty()) {
+                System.err.println("Error del consumidor: " + error2);
+            }
+
+            // 6. Retornar els dos codis de sortida.
+            return new PipelineResult(
+                    producerExitCode,
+                    consumerExitCode,
+                    output
+            );
+
+        } finally {
+            executor.shutdownNow();
+        }
+    }
 
     public ProcessResult execute(
             List<String> command,
@@ -112,23 +296,34 @@ public class ProcessRunner {
                             output));
 
             // Enviar l'entrada en una tasca separada i tancar stdin.
+
             Future<?> inputFuture = executor.submit(() -> {
                 try {
                     sendInput(process, input);
                 } catch (IOException e) {
-                    throw new RuntimeException(e);
+                    // Si el procés ja ha acabat, pot haver tancat stdin.
+                    if (process.isAlive()) {
+                        throw new RuntimeException(e);
+                    }
                 }
             });
 
             // Esperar fins al límit de temps.
+
             boolean finished = process.waitFor(
-                    timeout.toMillis(), TimeUnit.MILLISECONDS);
+                    timeout.toMillis(),
+                    java.util.concurrent.TimeUnit.MILLISECONDS);
 
             boolean timedOut = !finished;
 
+            TerminationCause cause;
+
             if (timedOut) {
-                process.destroyForcibly();
-                process.waitFor();
+                cause = TerminationCause.TIMEOUT;
+                stopProcess(process, cause);
+            } else {
+                cause = TerminationCause.NORMAL;
+                LOGGER.info("El procés ha acabat normalment.");
             }
 
             // Esperar que acabin les tasques d'entrada i de lectura.
@@ -166,7 +361,9 @@ public class ProcessRunner {
                     duration,
                     stdout,
                     stderr,
-                    timedOut);
+                    timedOut,
+                    cause
+            );
 
         } finally {
             executor.shutdownNow();

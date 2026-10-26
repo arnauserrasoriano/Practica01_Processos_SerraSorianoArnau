@@ -1,3 +1,4 @@
+
 package demo.process;
 
 import java.time.Duration;
@@ -8,7 +9,8 @@ public record ProcessResult(
         Duration duration,
         List<OutputLine> stdout,
         List<OutputLine> stderr,
-        boolean timedOut
+        boolean timedOut,
+        TerminationCause terminationCause
 ) {
     public ProcessResult {
         stdout = List.copyOf(stdout);
