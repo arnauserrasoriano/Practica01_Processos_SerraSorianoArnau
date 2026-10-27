@@ -152,7 +152,7 @@ public class ProcessRunner {
             java.util.concurrent.ExecutionException {
 
         // Com a màxim dos workers executant-se alhora.
-        ExecutorService executor = Executors.newFixedThreadPool(3, r -> {
+        ExecutorService executor = Executors.newFixedThreadPool(2, r -> {
             Thread t = new Thread(r);
             t.setName("io-" + t.getId());
             return t;
@@ -282,7 +282,7 @@ public class ProcessRunner {
                 new ConcurrentLinkedQueue<>();
 
         ExecutorService executor =
-                Executors.newFixedThreadPool(3);
+                Executors.newFixedThreadPool(2);
 
         try {
             // Llegir stdout i stderr al mateix temps.
