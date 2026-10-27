@@ -199,7 +199,7 @@ public class Main {
 
         ProcessResult result = runner.execute(
                 List.of("sh", "-c",
-                        "echo 'Worker iniciat'; sleep 1"),
+                        "echo 'Worker iniciat'; sleep 30"),
                 "",
                 Duration.ofSeconds(2)
         );
